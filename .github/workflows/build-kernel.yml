@@ -1,0 +1,166 @@
+name: Build OnePlus 3 Hermes Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget unzip bc bison flex libssl-dev \
+            libelf-dev make clang lld llvm ccache python3
+      
+      - name: Download kernel source
+        run: |
+          git clone --depth 1 -b lineage-21 https://github.com/LineageOS/android_kernel_oneplus_msm8996.git kernel
+      
+      - name: Download AnyKernel3
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+      
+      - name: Download toolchain (AOSP Clang)
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-r547379
+          cd ..
+          # Also get GCC for kernel building
+          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+      
+      - name: Apply kernel config patches
+        working-directory: kernel
+        run: |
+          # Enable ZRAM
+          echo "CONFIG_ZRAM=y" >> arch/arm64/configs/oneplus3_defconfig
+          echo "CONFIG_ZSMALLOC=y" >> arch/arm64/configs/oneplus3_defconfig
+          echo "CONFIG_ZSWAP=y" >> arch/arm64/configs/oneplus3_defconfig
+          echo "CONFIG_ZPOOL=y" >> arch/arm64/configs/oneplus3_defconfig
+          
+          # Enable KSM
+          echo "CONFIG_KSM=y" >> arch/arm64/configs/oneplus3_defconfig
+          
+          # Memory management optimizations
+          echo "CONFIG_COMPACTION=y" >> arch/arm64/configs/oneplus3_defconfig
+          echo "CONFIG_CMA=y" >> arch/arm64/configs/oneplus3_defconfig
+          
+          # Enable kernel samepage merging
+          echo "CONFIG_KSM=y" >> arch/arm64/configs/oneplus3_defconfig
+          
+          echo "Config patches applied"
+          cat arch/arm64/configs/oneplus3_defconfig | grep -E "ZRAM|ZSMALLOC|ZSWAP|KSM|COMPACTION|CMA"
+      
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=$PWD/../gcc64/bin/aarch64-linux-android-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CC=$PWD/../toolchain/clang-r547379/bin/clang
+          export LD=$PWD/../toolchain/clang-r547379/bin/ld.lld
+          export AR=$PWD/../toolchain/clang-r547379/bin/llvm-ar
+          export NM=$PWD/../toolchain/clang-r547379/bin/llvm-nm
+          export OBJCOPY=$PWD/../toolchain/clang-r547379/bin/llvm-objcopy
+          export OBJDUMP=$PWD/../toolchain/clang-r547379/bin/llvm-objdump
+          export STRIP=$PWD/../toolchain/clang-r547379/bin/llvm-strip
+          
+          # Use ccache for faster builds
+          export PATH="/usr/lib/ccache:$PATH"
+          
+          make clean
+          make mrproper
+          make oneplus3_defconfig
+          
+          # Build with all cores
+          make -j$(nproc) 2>&1 | tail -20
+          
+          echo "Build complete"
+          ls -la arch/arm64/boot/Image.gz-dtb 2>/dev/null || ls -la arch/arm64/boot/Image 2>/dev/null || echo "Checking for kernel image..."
+          find arch/arm64/boot -name "Image*" -type f
+      
+      - name: Package with AnyKernel3
+        run: |
+          # Copy kernel image to AnyKernel3
+          KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image" | head -1)
+          if [ -z "$KERNEL_IMG" ]; then
+            echo "ERROR: Kernel image not found"
+            find kernel/arch/arm64/boot -type f
+            exit 1
+          fi
+          
+          echo "Using kernel image: $KERNEL_IMG"
+          cp "$KERNEL_IMG" AnyKernel3/
+          
+          # Create AnyKernel3 config
+          cat > AnyKernel3/anykernel.sh << 'AKEOF'
+          # AnyKernel3 Configuration
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=oneplus3
+          device.name2=OnePlus3
+          device.name3=ONEPLUS A3003
+          block=/dev/block/bootdevice/by-name/boot
+          is_slot_device=0
+          ramdisk_compression=auto
+          AKEOF
+          
+          # Package ZIP
+          cd AnyKernel3
+          ZIP_NAME="HermesKernel-OP3-$(date +%Y%m%d).zip"
+          zip -r9 "../$ZIP_NAME" . -x "*.git*" "*.md" "LICENSE" 2>&1 | tail -5
+          cd ..
+          
+          echo "ZIP created: $ZIP_NAME"
+          ls -lh "$ZIP_NAME"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: hermes-kernel-${{ github.run_number }}
+          name: Hermes Kernel for OnePlus 3 (Build #${{ github.run_number }})
+          body: |
+            ## Hermes Kernel for OnePlus 3
+            
+            Custom kernel built with GitHub Actions.
+            
+            ### Features
+            - ZRAM (compressed RAM swap)
+            - KSM (Kernel Samepage Merging)
+            - Optimized LMK (Low Memory Killer)
+            - CMA (Contiguous Memory Allocator)
+            - Compaction support
+            
+            ### Installation
+            1. Download the ZIP
+            2. Boot to TWRP
+            3. Flash the ZIP
+            4. Reboot
+            
+            ### Build Info
+            - Source: LineageOS android_kernel_oneplus_msm8996
+            - Branch: lineage-21
+            - Clang: r547379
+            - Build: ${{ github.run_id }}
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
