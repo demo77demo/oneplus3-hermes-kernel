@@ -114,12 +114,23 @@ jobs:
           make mrproper
           make $(basename $DEFCONFIG)
           
-          # Build
-          make -j$(nproc) 2>&1 | tail -30
+          # Build - capture full output, fail on error
+          make -j$(nproc) 2>&1 | tee /tmp/build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "ERROR: Build failed with exit code $BUILD_EXIT"
+            tail -100 /tmp/build.log
+            exit 1
+          fi
           
           echo "=== Build complete ==="
-          echo "=== Kernel images ==="
-          find arch/arm64/boot -name "Image*" -type f -exec ls -lh {} \;
+          echo "=== All files in boot dir ==="
+          ls -la arch/arm64/boot/ 2>/dev/null || echo "No boot dir!"
+          echo "=== Searching for kernel images ==="
+          find arch/arm64/boot -type f -exec ls -lh {} \; 2>/dev/null
+          echo "=== Searching entire tree for Image* ==="
+          find . -name "Image*" -type f 2>/dev/null | head -20
       
       - name: Package with AnyKernel3
         run: |
