@@ -123,22 +123,44 @@ jobs:
       
       - name: Package with AnyKernel3
         run: |
-          # Find kernel image
-          KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz-dtb" | head -1)
+          # Find kernel image - be thorough, msm8996 can produce various names
+          echo "=== All files in boot dir ==="
+          find kernel/arch/arm64/boot -type f 2>/dev/null || echo "No boot dir found"
+          echo "=== Searching entire kernel tree for Image* ==="
+          find kernel -name "Image*" -type f 2>/dev/null | head -20
+          
+          KERNEL_IMG=""
+          for candidate in \
+            "kernel/arch/arm64/boot/Image.gz-dtb" \
+            "kernel/arch/arm64/boot/Image.gz" \
+            "kernel/arch/arm64/boot/Image" \
+            "kernel/arch/arm64/boot/bzImage"; do
+            if [ -f "$candidate" ]; then
+              KERNEL_IMG="$candidate"
+              break
+            fi
+          done
+          
+          # Fallback: find any Image file in boot dir
           if [ -z "$KERNEL_IMG" ]; then
-            KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz" | head -1)
+            KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image*" -type f 2>/dev/null | head -1)
           fi
+          # Fallback: find any Image file anywhere
           if [ -z "$KERNEL_IMG" ]; then
-            KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image" | head -1)
+            KERNEL_IMG=$(find kernel -name "Image.gz-dtb" -o -name "Image.gz" -o -name "Image" 2>/dev/null | grep -v ".dtb$" | head -1)
           fi
           
           if [ -z "$KERNEL_IMG" ]; then
             echo "ERROR: No kernel image found"
-            find kernel/arch/arm64/boot -type f
+            echo "=== Full kernel tree ==="
+            find kernel -type f -name "*.o" | head -5
+            echo "=== Checking if build actually ran ==="
+            ls -la kernel/arch/arm64/boot/ 2>/dev/null || echo "No boot dir"
             exit 1
           fi
           
           echo "Using kernel image: $KERNEL_IMG"
+          ls -lh "$KERNEL_IMG"
           cp "$KERNEL_IMG" AnyKernel3/
           
           # Create AnyKernel3 config
