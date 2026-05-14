@@ -11,7 +11,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     
     steps:
       - name: Checkout repo
@@ -21,47 +21,69 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git wget unzip bc bison flex libssl-dev \
-            libelf-dev make clang lld llvm ccache python3
+            libelf-dev make clang lld llvm ccache python3 zip
       
       - name: Download kernel source
         run: |
-          git clone --depth 1 -b lineage-21 https://github.com/LineageOS/android_kernel_oneplus_msm8996.git kernel
+          git clone --depth 1 -b lineage-18.1 https://github.com/LineageOS/android_kernel_oneplus_msm8996.git kernel
+          echo "Kernel source downloaded"
+          ls kernel/arch/arm64/configs/ | grep -i oneplus
       
       - name: Download AnyKernel3
         run: |
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          echo "AnyKernel3 downloaded"
       
-      - name: Download toolchain (AOSP Clang)
+      - name: Download toolchain
         run: |
           mkdir -p toolchain
           cd toolchain
+          # AOSP Clang
           git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-r547379
           cd ..
-          # Also get GCC for kernel building
+          # GCC 64-bit
           git clone --depth 1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          # GCC 32-bit
           git clone --depth 1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+          echo "Toolchains downloaded"
       
       - name: Apply kernel config patches
         working-directory: kernel
         run: |
-          # Enable ZRAM
-          echo "CONFIG_ZRAM=y" >> arch/arm64/configs/oneplus3_defconfig
-          echo "CONFIG_ZSMALLOC=y" >> arch/arm64/configs/oneplus3_defconfig
-          echo "CONFIG_ZSWAP=y" >> arch/arm64/configs/oneplus3_defconfig
-          echo "CONFIG_ZPOOL=y" >> arch/arm64/configs/oneplus3_defconfig
+          DEFCONFIG="arch/arm64/configs/oneplus3_defconfig"
           
-          # Enable KSM
-          echo "CONFIG_KSM=y" >> arch/arm64/configs/oneplus3_defconfig
+          # Check if defconfig exists
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "ERROR: $DEFCONFIG not found"
+            ls arch/arm64/configs/
+            # Try to find any oneplus defconfig
+            DEFCONFIG=$(ls arch/arm64/configs/ | grep -i oneplus | head -1)
+            if [ -z "$DEFCONFIG" ]; then
+              echo "No oneplus defconfig found, using first available"
+              DEFCONFIG=$(ls arch/arm64/configs/ | head -1)
+            fi
+            DEFCONFIG="arch/arm64/configs/$DEFCONFIG"
+            echo "Using: $DEFCONFIG"
+          fi
           
-          # Memory management optimizations
-          echo "CONFIG_COMPACTION=y" >> arch/arm64/configs/oneplus3_defconfig
-          echo "CONFIG_CMA=y" >> arch/arm64/configs/oneplus3_defconfig
+          # Enable ZRAM and memory optimizations
+          cat >> "$DEFCONFIG" << 'EOF'
           
-          # Enable kernel samepage merging
-          echo "CONFIG_KSM=y" >> arch/arm64/configs/oneplus3_defconfig
+          # Hermes Kernel - Memory Optimizations
+          CONFIG_ZRAM=y
+          CONFIG_ZSMALLOC=y
+          CONFIG_ZSWAP=y
+          CONFIG_ZPOOL=y
+          CONFIG_KSM=y
+          CONFIG_COMPACTION=y
+          CONFIG_CMA=y
+          CONFIG_LRU_GEN=y
+          CONFIG_LRU_GEN_ENABLED=y
+          EOF
           
-          echo "Config patches applied"
-          cat arch/arm64/configs/oneplus3_defconfig | grep -E "ZRAM|ZSMALLOC|ZSWAP|KSM|COMPACTION|CMA"
+          echo "Config patches applied to $DEFCONFIG"
+          echo "=== Memory-related config ==="
+          grep -E "ZRAM|ZSMALLOC|ZSWAP|KSM|COMPACTION|CMA|LRU_GEN" "$DEFCONFIG" || echo "Some configs may not be available in this kernel version"
       
       - name: Build kernel
         working-directory: kernel
@@ -77,26 +99,41 @@ jobs:
           export OBJDUMP=$PWD/../toolchain/clang-r547379/bin/llvm-objdump
           export STRIP=$PWD/../toolchain/clang-r547379/bin/llvm-strip
           
-          # Use ccache for faster builds
+          # Use ccache
           export PATH="/usr/lib/ccache:$PATH"
+          
+          # Find defconfig
+          DEFCONFIG=$(ls arch/arm64/configs/ | grep -i oneplus | head -1)
+          if [ -z "$DEFCONFIG" ]; then
+            DEFCONFIG=$(ls arch/arm64/configs/ | head -1)
+          fi
+          DEFCONFIG="arch/arm64/configs/$DEFCONFIG"
+          echo "Using defconfig: $DEFCONFIG"
           
           make clean
           make mrproper
-          make oneplus3_defconfig
+          make $(basename $DEFCONFIG)
           
-          # Build with all cores
-          make -j$(nproc) 2>&1 | tail -20
+          # Build
+          make -j$(nproc) 2>&1 | tail -30
           
-          echo "Build complete"
-          ls -la arch/arm64/boot/Image.gz-dtb 2>/dev/null || ls -la arch/arm64/boot/Image 2>/dev/null || echo "Checking for kernel image..."
-          find arch/arm64/boot -name "Image*" -type f
+          echo "=== Build complete ==="
+          echo "=== Kernel images ==="
+          find arch/arm64/boot -name "Image*" -type f -exec ls -lh {} \;
       
       - name: Package with AnyKernel3
         run: |
-          # Copy kernel image to AnyKernel3
-          KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz-dtb" -o -name "Image" | head -1)
+          # Find kernel image
+          KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz-dtb" | head -1)
           if [ -z "$KERNEL_IMG" ]; then
-            echo "ERROR: Kernel image not found"
+            KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image.gz" | head -1)
+          fi
+          if [ -z "$KERNEL_IMG" ]; then
+            KERNEL_IMG=$(find kernel/arch/arm64/boot -name "Image" | head -1)
+          fi
+          
+          if [ -z "$KERNEL_IMG" ]; then
+            echo "ERROR: No kernel image found"
             find kernel/arch/arm64/boot -type f
             exit 1
           fi
@@ -106,7 +143,7 @@ jobs:
           
           # Create AnyKernel3 config
           cat > AnyKernel3/anykernel.sh << 'AKEOF'
-          # AnyKernel3 Configuration
+          # AnyKernel3 Configuration for OnePlus 3
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -115,6 +152,8 @@ jobs:
           device.name1=oneplus3
           device.name2=OnePlus3
           device.name3=ONEPLUS A3003
+          device.name4=oneplus3t
+          device.name5=OnePlus3T
           block=/dev/block/bootdevice/by-name/boot
           is_slot_device=0
           ramdisk_compression=auto
@@ -122,8 +161,8 @@ jobs:
           
           # Package ZIP
           cd AnyKernel3
-          ZIP_NAME="HermesKernel-OP3-$(date +%Y%m%d).zip"
-          zip -r9 "../$ZIP_NAME" . -x "*.git*" "*.md" "LICENSE" 2>&1 | tail -5
+          ZIP_NAME="HermesKernel-OP3-$(date +%Y%m%d-%H%M).zip"
+          zip -r9 "../$ZIP_NAME" . -x "*.git*" "*.md" "LICENSE"
           cd ..
           
           echo "ZIP created: $ZIP_NAME"
@@ -134,7 +173,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: hermes-kernel-${{ github.run_number }}
-          name: Hermes Kernel for OnePlus 3 (Build #${{ github.run_number }})
+          name: "Hermes Kernel for OnePlus 3 (Build #${{ github.run_number }})"
           body: |
             ## Hermes Kernel for OnePlus 3
             
@@ -143,9 +182,9 @@ jobs:
             ### Features
             - ZRAM (compressed RAM swap)
             - KSM (Kernel Samepage Merging)
-            - Optimized LMK (Low Memory Killer)
+            - Optimized memory management
             - CMA (Contiguous Memory Allocator)
-            - Compaction support
+            - LRU Gen (better page reclaim)
             
             ### Installation
             1. Download the ZIP
@@ -154,8 +193,7 @@ jobs:
             4. Reboot
             
             ### Build Info
-            - Source: LineageOS android_kernel_oneplus_msm8996
-            - Branch: lineage-21
+            - Source: LineageOS android_kernel_oneplus_msm8996 (lineage-18.1)
             - Clang: r547379
             - Build: ${{ github.run_id }}
           files: ${{ env.ZIP_NAME }}
@@ -163,4 +201,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
