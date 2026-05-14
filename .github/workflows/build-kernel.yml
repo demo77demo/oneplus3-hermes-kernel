@@ -38,9 +38,6 @@ jobs:
         run: |
           mkdir -p toolchain
           cd toolchain
-          # AOSP Clang
-          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-r547379
-          cd ..
           # GCC 64-bit
           git clone --depth 1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
           # GCC 32-bit
@@ -90,18 +87,11 @@ jobs:
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=$PWD/../gcc64/bin/aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC=$PWD/../toolchain/clang-r547379/bin/clang
-          export LD=$PWD/../toolchain/clang-r547379/bin/ld.lld
-          export AR=$PWD/../toolchain/clang-r547379/bin/llvm-ar
-          export NM=$PWD/../toolchain/clang-r547379/bin/llvm-nm
-          export OBJCOPY=$PWD/../toolchain/clang-r547379/bin/llvm-objcopy
-          export OBJDUMP=$PWD/../toolchain/clang-r547379/bin/llvm-objdump
-          export STRIP=$PWD/../toolchain/clang-r547379/bin/llvm-strip
-          
+          export CC=gcc
+
           # Use ccache
           export PATH="/usr/lib/ccache:$PATH"
-          
+
           # Find defconfig
           DEFCONFIG=$(ls arch/arm64/configs/ | grep -i oneplus | head -1)
           if [ -z "$DEFCONFIG" ]; then
@@ -109,21 +99,21 @@ jobs:
           fi
           DEFCONFIG="arch/arm64/configs/$DEFCONFIG"
           echo "Using defconfig: $DEFCONFIG"
-          
+
           make clean
           make mrproper
           make $(basename $DEFCONFIG)
-          
+
           # Build - capture full output, fail on error
           make -j$(nproc) 2>&1 | tee /tmp/build.log
           BUILD_EXIT=${PIPESTATUS[0]}
-          
+
           if [ $BUILD_EXIT -ne 0 ]; then
             echo "ERROR: Build failed with exit code $BUILD_EXIT"
             tail -100 /tmp/build.log
             exit 1
           fi
-          
+
           echo "=== Build complete ==="
           echo "=== All files in boot dir ==="
           ls -la arch/arm64/boot/ 2>/dev/null || echo "No boot dir!"
